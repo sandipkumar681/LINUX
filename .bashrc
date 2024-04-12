@@ -28,5 +28,14 @@ alias htmlCreate='touch index.html style.css 01.js'
 #To Create JAVA File
 alias javaCreate='touch test1.java test2.java test3.java test4.java'
 #To compile JAVA's class file in same folder 
-alias cJAVA='javac -d . *.java'
+alias createJ='javac -d . *.java'
+#For gnome-text-editor
+alias editor='gnome-text-editor'
+#For systemctl
+alias SS='sudo systemctl'
+#To enable or disable wifi
+alias wifi=' sudo nmcli radio wifi'
+#To enable or disable bluetooth
+alias enableBluetooth='sudo systemctl enable bluetooth.service'
+alias disableBluetooth='sudo systemctl disable bluetooth.service'
 PS1='[\u@\h \W]\$ '
