@@ -249,7 +249,6 @@ export PATH="$PATH:$ANDROID_HOME/cmdline-tools/latest/bin"
 #   Divider: ─────────── ✘ 127 not found  took 12.3s  14:32 ──
 #   Line 1:  ~/parent/CURRENT (branch) +1 ~2 ?1 ↑1  ⬢ node 24.22  🐦 swift 6.4  📱 device
 #   Line 2:  ▶                                           [battery  clock on the right]
-#   After Enter, lines 1-2 collapse to just "▶ command" (transient prompt).
 # ------------------------------------------------------------------------------
 setopt PROMPT_SUBST
 autoload -Uz vcs_info add-zsh-hook
@@ -408,11 +407,9 @@ _batt_update() {
   _batt="%F{$col}${icon} ${pct}%%%f  "
 }
 
-# --- Transient prompt: full prompt while typing, collapses to "▶ cmd" after Enter ---
-setopt TRANSIENT_RPROMPT
+# --- Prompt layout ---
 _PROMPT_FULL='${_path}${vcs_info_msg_0_}${_node_badge}${_swift_badge}${_dev_badge}
 %(?.%F{green}.%F{red})▶%f '
-_PROMPT_SHORT='%(?.%F{green}.%F{red})▶%f '
 _RPROMPT_FULL='${_batt}%F{244}%D{%H:%M}%f'
 _build_prompt() {
   _divider
@@ -422,11 +419,6 @@ _build_prompt() {
   print -n '\e[5 q'                    # blinking bar cursor
 }
 add-zsh-hook precmd _build_prompt
-_transient_finish() {
-  PROMPT=$_PROMPT_SHORT RPROMPT=''
-  zle .reset-prompt
-}
-zle -N zle-line-finish _transient_finish
 
 # --- Welcome banner (once per new terminal, not on reload) ---
 _banner() {
