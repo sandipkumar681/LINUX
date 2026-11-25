@@ -54,15 +54,28 @@ if (( $+commands[eza] )); then
   alias ls='eza --icons --group-directories-first'
   alias la='eza -alh --icons --git --group-directories-first'
   alias lt='eza --tree --level=2 --icons --git-ignore'
+  # File-type colors: folders blue, Swift/Xcode orange, JS yellow, TS cyan,
+  # images purple, Kotlin/Java pink/red, lock & plist files dimmed
+  export EZA_COLORS='di=1;34:*.swift=38;5;208:*.xcodeproj=1;38;5;208:*.xcworkspace=1;38;5;208:*.storyboard=38;5;208:*.xib=38;5;208:*.js=33:*.jsx=33:*.mjs=33:*.cjs=33:*.ts=36:*.tsx=36:*.json=93:*.md=97:*.png=35:*.jpg=35:*.jpeg=35:*.gif=35:*.svg=35:*.webp=35:*.kt=95:*.java=91:*.gradle=32:*.kts=32:*.sh=92:*.zsh=92:*.yml=94:*.yaml=94:*.lock=90:*.plist=90:*.apk=1;32:*.aab=1;32:*.ipa=1;32'
 fi
 
 # bat: cat with syntax highlighting (behaves like plain cat in pipes)
-(( $+commands[bat] )) && alias cat='bat --paging=never --style=plain'
+if (( $+commands[bat] )); then
+  alias cat='bat --paging=never --style=plain'
+  # Colored man pages (headings, flags and options highlighted)
+  export MANPAGER="sh -c 'col -bx | bat -l man -p'"
+  export MANROFFOPT='-c'
+fi
 
 # fzf: Ctrl+R fuzzy history, Ctrl+T fuzzy file picker, Alt+C fuzzy cd
 if (( $+commands[fzf] )); then
   source <(fzf --zsh)
-  export FZF_DEFAULT_OPTS='--height=40% --layout=reverse --border'
+  export FZF_DEFAULT_OPTS='--height=40% --layout=reverse --border
+    --color=hl:blue,hl+:bright-blue,pointer:magenta,marker:yellow,prompt:green,info:8,border:8,spinner:cyan'
+  # Ctrl+T: preview files with syntax highlighting (folders as a tree)
+  export FZF_CTRL_T_OPTS="--preview 'bat --color=always --style=numbers --line-range=:300 {} 2>/dev/null || eza --tree --level=2 --icons --color=always {}' --preview-window=right:55%"
+  # Alt+C: preview each folder as a tree
+  export FZF_ALT_C_OPTS="--preview 'eza --tree --level=2 --icons --color=always {}' --preview-window=right:55%"
 fi
 
 # zoxide: "z linux" jumps to ~/sandip/LINUX (learns your most-used folders)
@@ -233,8 +246,10 @@ export PATH="$PATH:$ANDROID_HOME/cmdline-tools/latest/bin"
 
 # ------------------------------------------------------------------------------
 # Prompt
-#   Line 1: ~/path (branch)●● ↑ahead ↓behind  ⬢ node 20.11  📱 device  took 12.3s
-#   Line 2: ▶  (green = last command OK, red = it failed)
+#   Divider: ─────────── ✘ 127 not found  took 12.3s  14:32 ──
+#   Line 1:  ~/parent/CURRENT (branch) +1 ~2 ?1 ↑1  ⬢ node 24.22  🐦 swift 6.4  📱 device
+#   Line 2:  ▶                                           [battery  clock on the right]
+#   After Enter, lines 1-2 collapse to just "▶ command" (transient prompt).
 # ------------------------------------------------------------------------------
 setopt PROMPT_SUBST
 autoload -Uz vcs_info add-zsh-hook
@@ -252,10 +267,12 @@ _fmt_dur() {
 }
 _t_end() {
   local st=$?
-  [[ -z $_t0 ]] && { _took=''; return }
+  _last_status=$st _took='' _ran_cmd=0
+  [[ -z $_t0 ]] && return          # empty Enter: nothing ran
+  _ran_cmd=1
   local d=$(( EPOCHREALTIME - _t0 )); unset _t0
   _fmt_dur $d
-  (( d > 3 )) && _took=" %F{yellow}took ${REPLY}%f" || _took=''
+  (( d > 3 )) && _took=$REPLY
   # Long command (>30s) finished: macOS notification, so you can switch away
   if (( d > 30 )); then
     local icon='✅' word='finished'
@@ -349,8 +366,85 @@ _title_cmd()  { print -rn -- $'\e]0;'"${1[1,50]}"$'\a'; }
 add-zsh-hook precmd _title_idle
 add-zsh-hook preexec _title_cmd
 
-PROMPT='%F{cyan}%~%f${vcs_info_msg_0_}${_node_badge}${_swift_badge}${_dev_badge}${_took}
+# --- Divider after each command: ──────── ✘ 127 not found  took 16m 9s  14:32 ──
+# Printed (not part of the prompt), so status + duration stay in scrollback.
+_divider() {
+  (( _ran_cmd )) || return
+  local label='' plain='' why=''
+  if (( _last_status )); then
+    case $_last_status in
+      126) why=' not executable';; 127) why=' not found';;
+      130) why=' Ctrl+C';;         137) why=' killed';;
+    esac
+    label+="%F{red}✘ ${_last_status}${why}%f  "; plain+="✘ ${_last_status}${why}  "
+  fi
+  [[ -n $_took ]] && { label+="%F{yellow}took ${_took}%f  "; plain+="took ${_took}  "; }
+  local now=${(%):-%D{%H:%M}}
+  label+="%F{244}${now}%f"; plain+=$now
+  local -i n=$(( COLUMNS - ${#plain} - 4 )); (( n < 4 )) && n=4
+  print -P -- "%F{238}${(l:n::─:)}%f ${label} %F{238}──%f"
+}
+
+# --- Path: parent folders dimmed, current folder bold ---
+_build_path() {
+  local p=${(%):-%~}; p=${p//\%/%%}
+  if [[ $p == */* && $p != / ]]; then
+    _path="%F{244}${p%/*}/%f%B%F{cyan}${p##*/}%f%b"
+  else
+    _path="%B%F{cyan}${p}%f%b"
+  fi
+}
+
+# --- Battery (right side), refreshed at most once a minute; empty on desktops ---
+_batt_update() {
+  (( EPOCHSECONDS - ${_batt_ts:-0} < 60 )) && return
+  _batt_ts=$EPOCHSECONDS _batt=''
+  local out=$(pmset -g batt 2>/dev/null)
+  [[ $out =~ '([0-9]+)%' ]] || return
+  local -i pct=${match[1]}; local col=green icon=$''      # Nerd Font battery
+  (( pct < 50 )) && { col=yellow icon=$''; }
+  (( pct < 20 )) && { col=red    icon=$''; }
+  [[ $out == *"'AC Power'"* ]] && icon=$''                # Nerd Font bolt
+  _batt="%F{$col}${icon} ${pct}%%%f  "
+}
+
+# --- Transient prompt: full prompt while typing, collapses to "▶ cmd" after Enter ---
+setopt TRANSIENT_RPROMPT
+_PROMPT_FULL='${_path}${vcs_info_msg_0_}${_node_badge}${_swift_badge}${_dev_badge}
 %(?.%F{green}.%F{red})▶%f '
+_PROMPT_SHORT='%(?.%F{green}.%F{red})▶%f '
+_RPROMPT_FULL='${_batt}%F{244}%D{%H:%M}%f'
+_build_prompt() {
+  _divider
+  _build_path
+  _batt_update
+  PROMPT=$_PROMPT_FULL RPROMPT=$_RPROMPT_FULL
+  print -n '\e[5 q'                    # blinking bar cursor
+}
+add-zsh-hook precmd _build_prompt
+_transient_finish() {
+  PROMPT=$_PROMPT_SHORT RPROMPT=''
+  zle .reset-prompt
+}
+zle -N zle-line-finish _transient_finish
+
+# --- Welcome banner (once per new terminal, not on reload) ---
+_banner() {
+  local os=$(sw_vers -productVersion 2>/dev/null)
+  local chip=$(sysctl -n machdep.cpu.brand_string 2>/dev/null)
+  local -i total=$(( $(sysctl -n hw.memsize) / 1073741824 ))
+  local vm=$(vm_stat) l; local -A v; local -i ps=16384
+  [[ $vm =~ 'page size of ([0-9]+)' ]] && ps=${match[1]}
+  for l in ${(f)vm}; do
+    [[ $l =~ '^"?([^:"]+)"?:[[:space:]]+([0-9]+)' ]] && v[${match[1]}]=${match[2]}
+  done
+  local used=$(printf '%.1f' $(( (${v[Pages active]:-0} + ${v[Pages wired down]:-0} + ${v[Pages occupied by compressor]:-0}) * ps / 1073741824.0 )))
+  local -i free=$(( $(df -k /System/Volumes/Data | awk 'NR==2{print $4}') * 1024 / 1000000000 ))
+  _batt_update
+  local sep='%F{238}  ·  %f'
+  print -P -- "%F{white}macOS ${os}%f${sep}%F{cyan}${chip}%f${sep}%F{244}RAM%f %F{white}${used}/${total} GB%f${sep}%F{244}Disk%f %F{white}${free} GB free%f${sep}${_batt% }"
+}
+[[ -z $_BANNER_SHOWN ]] && { _banner; _BANNER_SHOWN=1; }
 
 xcode26() { nohup /Applications/Xcode-26.5.app/Contents/MacOS/Xcode "$@" >/dev/null 2>&1 & }
 
