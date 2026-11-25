@@ -242,30 +242,51 @@ zmodload zsh/datetime
 
 # --- Command timer + desktop notification (registered first so it sees $?) ---
 _t_start() { _t0=$EPOCHREALTIME; _t_cmd=${1%% *}; }
+# Human-readable duration: 5.6s / 16m 9s / 1h 2m
+_fmt_dur() {
+  local -i s=$1
+  if   (( $1 < 60 ));   then REPLY=$(printf '%.1fs' $1)
+  elif (( s < 3600 )); then REPLY="$(( s / 60 ))m $(( s % 60 ))s"
+  else                      REPLY="$(( s / 3600 ))h $(( s % 3600 / 60 ))m"
+  fi
+}
 _t_end() {
   local st=$?
   [[ -z $_t0 ]] && { _took=''; return }
   local d=$(( EPOCHREALTIME - _t0 )); unset _t0
-  (( d > 3 )) && _took=" %F{yellow}took $(printf '%.1fs' $d)%f" || _took=''
+  _fmt_dur $d
+  (( d > 3 )) && _took=" %F{yellow}took ${REPLY}%f" || _took=''
   # Long command (>30s) finished: macOS notification, so you can switch away
   if (( d > 30 )); then
     local icon='✅' word='finished'
     (( st != 0 )) && { icon='❌'; word='failed'; }
-    osascript -e "display notification \"${icon} ${_t_cmd//\"/} ${word} in ${d%.*}s\" with title \"Terminal\"" &>/dev/null &!
+    osascript -e "display notification \"${icon} ${_t_cmd//\"/} ${word} in ${REPLY}\" with title \"Terminal\"" &>/dev/null &!
   fi
 }
 add-zsh-hook preexec _t_start
 add-zsh-hook precmd _t_end
 
-# --- Git: branch, staged/unstaged dots, ahead/behind arrows ---
+# --- Git: branch + file counts + ahead/behind arrows ---
+#   +3 green  = 3 files staged (git add done)
+#   ~2 yellow = 2 files modified, not staged yet
+#   ?1 red    = 1 new untracked file
+#   ↑2 / ↓1   = commits ahead of / behind the remote
 zstyle ':vcs_info:*' enable git
-zstyle ':vcs_info:git:*' check-for-changes true
-zstyle ':vcs_info:git:*' unstagedstr '%F{red}●%f'
-zstyle ':vcs_info:git:*' stagedstr '%F{green}●%f'
-zstyle ':vcs_info:git:*' formats ' %F{yellow}(%b)%f%u%c%m'
-zstyle ':vcs_info:git:*' actionformats ' %F{yellow}(%b|%F{red}%a%F{yellow})%f%u%c%m'
+zstyle ':vcs_info:git:*' formats ' %F{yellow}(%b)%f%m'
+zstyle ':vcs_info:git:*' actionformats ' %F{yellow}(%b|%F{red}%a%F{yellow})%f%m'
 zstyle ':vcs_info:git*+set-message:*' hooks git-aheadbehind
 +vi-git-aheadbehind() {
+  local line staged=0 modified=0 untracked=0
+  for line in ${(f)"$(git status --porcelain 2>/dev/null)"}; do
+    if [[ $line == '??'* ]]; then (( untracked++ ))
+    else
+      [[ ${line[1]} == [MADRCU] ]] && (( staged++ ))
+      [[ ${line[2]} == [MDU] ]] && (( modified++ ))
+    fi
+  done
+  (( staged ))    && hook_com[misc]+=" %F{green}+${staged}%f"
+  (( modified ))  && hook_com[misc]+=" %F{yellow}~${modified}%f"
+  (( untracked )) && hook_com[misc]+=" %F{red}?${untracked}%f"
   local ahead behind
   read ahead behind <<< "$(git rev-list --left-right --count HEAD...@{upstream} 2>/dev/null)"
   (( ahead ))  && hook_com[misc]+=" %F{green}↑${ahead}%f"
@@ -294,13 +315,41 @@ add-zsh-hook chpwd _proj_node
 add-zsh-hook precmd _proj_device
 _proj_node   # run once for the folder the shell starts in
 
+# --- Swift badge: shown in folders with Package.swift / .xcodeproj / .xcworkspace ---
+# "swift --version" takes ~1s, so the result is cached in ~/.cache and only
+# re-checked when the active Xcode (xcode-select -p) changes or gets updated.
+_swift_version() {
+  (( $+commands[swift] )) || return 1
+  local dev=$(xcode-select -p 2>/dev/null) cache=~/.cache/zsh-swift-version
+  zmodload -F zsh/stat b:zstat
+  local -a mt; zstat -A mt +mtime -- "$dev" 2>/dev/null
+  local key="$dev:${mt[1]}"
+  if [[ -r $cache ]]; then
+    local -a c=("${(@f)$(<$cache)}")
+    [[ ${c[1]} == $key ]] && { REPLY=${c[2]}; return 0; }
+  fi
+  local out=$(swift --version 2>/dev/null)
+  [[ $out =~ 'Swift version ([0-9]+\.[0-9]+)' ]] || return 1
+  REPLY=${match[1]}
+  mkdir -p ~/.cache && print -r -- "$key"$'\n'"$REPLY" >| $cache
+}
+_proj_swift() {
+  _swift_badge=''
+  local -a hits=( Package.swift(N) *.xcodeproj(N) *.xcworkspace(N) )
+  (( ${#hits} )) || return
+  [[ -z $_swift_ver ]] && _swift_version && _swift_ver=$REPLY
+  [[ -n $_swift_ver ]] && _swift_badge=" %F{208}🐦 swift ${_swift_ver}%f"
+}
+add-zsh-hook chpwd _proj_swift
+_proj_swift
+
 # --- Terminal tab title: folder when idle, command while running ---
 _title_idle() { print -Pn '\e]0;%1~\a'; }
 _title_cmd()  { print -rn -- $'\e]0;'"${1[1,50]}"$'\a'; }
 add-zsh-hook precmd _title_idle
 add-zsh-hook preexec _title_cmd
 
-PROMPT='%F{cyan}%~%f${vcs_info_msg_0_}${_node_badge}${_dev_badge}${_took}
+PROMPT='%F{cyan}%~%f${vcs_info_msg_0_}${_node_badge}${_swift_badge}${_dev_badge}${_took}
 %(?.%F{green}.%F{red})▶%f '
 
 xcode26() { nohup /Applications/Xcode-26.5.app/Contents/MacOS/Xcode "$@" >/dev/null 2>&1 & }
